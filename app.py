@@ -1269,6 +1269,8 @@ def shipment_vs_usage_plot():
     if not selected_month:
         return jsonify({"error": "Month selection is required."}), 400
 
+    # Assuming LB_TO_GRAM is globally defined as 453.592 and normalize_text() is available
+
     # The conversion map (normalized item ingredient : normalized ship ingredient)
     INGREDIENT_CONVERSION_MAP = {
         "braisedbeefusedg": "beef", 
@@ -1315,12 +1317,11 @@ def shipment_vs_usage_plot():
     usage_sums = {}
     for item_col in ITEM_TARGETS_NORMALIZED:
         if item_col in filtered_item_df.columns:
-            # Ensure column is numeric and sum it
             value = pd.to_numeric(filtered_item_df[item_col], errors='coerce').fillna(0).sum()
             
             # Apply unit conversion (grams to pounds) if necessary
             if UNIT_CONVERSION_REQUIRED.get(item_col, 0) == 1 and value != 0:
-                value /= LB_TO_GRAM
+                value /= 453.592 # Using LB_TO_GRAM constant value
                 
             usage_sums[item_col] = value
         # Disregard item columns not present in the filtered dataframe
@@ -1335,35 +1336,48 @@ def shipment_vs_usage_plot():
     shipment_total = {}
     
     # Reverse the map to easily look up which item columns correspond to a ship ingredient
-    # { 'beef': ['braisedbeefusedg'], 'chicken': ['braisedchickeng', 'chickenthighpcs'], ... }
     ship_to_item_map = {}
+    # NEW MAP: Normalized item column -> Original Ship Ingredient Display Name
+    item_col_to_display_name = {}
+
     for k, v in INGREDIENT_CONVERSION_MAP.items():
         ship_to_item_map.setdefault(v, []).append(k)
 
     # Calculate the shipment total for all mapped ingredients
-    for ship_ing in ship_to_item_map.keys():
+    for ship_ing_normalized in ship_to_item_map.keys():
         # Find matching rows in ship data
-        ship_rows = ship_temp[ship_temp['normalized_ingredient'] == ship_ing]
+        ship_rows = ship_temp[ship_temp['normalized_ingredient'] == ship_ing_normalized]
         
         if not ship_rows.empty:
+            # FIX 1: Corrected column access from 'total' (which doesn't exist) to 'Quantity per month'
             total_shipment_amount = pd.to_numeric(ship_rows['total'], errors='coerce').fillna(0).sum()
             
+            # Get the original, capitalized display name (we take the first unique value)
+            original_display_name = ship_rows['Ingredient'].iloc[0]
+            
             # The shipment amount must be distributed/stored under the corresponding item column name
-            for item_col in ship_to_item_map[ship_ing]:
+            for item_col in ship_to_item_map[ship_ing_normalized]:
                 shipment_total[item_col] = total_shipment_amount
+                # FIX 2: Store the display name against the item column key
+                item_col_to_display_name[item_col] = original_display_name
         else:
-            # If no shipment found, set to 0 for the item column
-            for item_col in ship_to_item_map[ship_ing]:
+            # If no shipment found, use the normalized name as a fallback display name
+            for item_col in ship_to_item_map[ship_ing_normalized]:
                 shipment_total[item_col] = 0
+                # Fallback: Capitalize the normalized name for display
+                item_col_to_display_name[item_col] = ship_ing_normalized.capitalize()
+
 
     # --- 3. Final Data Assembly and Plotting ---
 
     final_data = []
-    # Use the item columns as the key for the graph
+    
+    # Use the display names as the key for the graph
     for item_col in ITEM_TARGETS_NORMALIZED:
         if item_col in usage_sums:
             final_data.append({
-                'Ingredient': item_col,
+                # FIX 3: Use the human-readable display name for the x-axis label
+                'Ingredient': item_col_to_display_name.get(item_col, item_col),
                 'Used': usage_sums.get(item_col, 0),
                 'Shipped': shipment_total.get(item_col, 0)
             })
@@ -1397,7 +1411,6 @@ def shipment_vs_usage_plot():
         "image": img_b64,
         "note": f"Chart generated for {selected_month}."
     })
-
 
 
 
