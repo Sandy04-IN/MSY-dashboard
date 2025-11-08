@@ -9,12 +9,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, accuracy_score, precision_score, recall_score
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, accuracy_score, precision_score, recall_score, explained_variance_score
 from datetime import datetime, date
 import numpy as np
 import os
 import io
 import base64
+
 
 
 app = Flask(__name__)
@@ -28,7 +30,8 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # Global storage
 group = None
 category = None
-item = None # full uploaded dataframe (never mutated)
+item = None
+ship = None
 temp_df_preds = None        # dataframe containing actual & predicted values after building model
 train_df = None
 test_df = None
@@ -122,6 +125,10 @@ HTML_TEMPLATE = """
 
         // Fetch columns when "Group By" changes
         React.useEffect(() => {
+            // 🔥 FIX: Clear previous selections when the grouping category changes
+            setX("");
+            setY("");
+
             if (!groupBy) {
             setColumnOptions([]);
             return;
@@ -244,6 +251,7 @@ HTML_TEMPLATE = """
                     <option value="Group">Group</option>
                     <option value="Category">Category</option>
                     <option value="Item">Item</option>
+                    <option value="Ingredient/Shipment">Ingredient/Shipment</option>
                     </select>
                 </div>
 
@@ -365,7 +373,223 @@ HTML_TEMPLATE = """
     };
 
 
+    // Next Month Usage Tab
+    const NextMonthUsage = () => {
+        const [monthToPredict, setMonthToPredict] = React.useState("");
+        const [predictionResults, setPredictionResults] = React.useState(null);
+        const [loading, setLoading] = React.useState(false);
+        const [imgUrl, setImgUrl] = React.useState("");
+        const [note, setNote] = React.useState("");
 
+        const MONTH_OPTIONS = ["June", "July", "Aug", "Sept", "Oct", "Nov"];
+
+        const handlePredict = async () => {
+            if (!monthToPredict) {
+                alert("Please select a month to predict.");
+                return;
+            }
+
+            setLoading(true);
+            setPredictionResults(null);
+            setImgUrl("");
+            setNote("");
+
+            try {
+                const response = await fetch("/predict_next_month_usage", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ month: monthToPredict }),
+                });
+
+                if (!response.ok) {
+                    const txt = await response.text();
+                    setNote("Prediction Error: " + txt);
+                    return;
+                }
+
+                const data = await response.json();
+                
+                if (data.error) {
+                    setNote(data.error);
+                    return;
+                }
+                
+                // Handle image data separately if available
+                if (data.image) {
+                    setImgUrl("data:image/png;base64," + data.image);
+                    delete data.image; // Clean up the JSON data for display
+                }
+                
+                setPredictionResults(data);
+                setNote(data.note || "Prediction successful!");
+
+            } catch (e) {
+                console.error("Prediction error:", e);
+                setNote("An unexpected error occurred during prediction.");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        return (
+            <div>
+                <h2>Next Month Usage Prediction</h2>
+
+                <div style={{ marginBottom: 15 }}>
+                    <label>Month to Predict: </label>
+                    <select 
+                        value={monthToPredict} 
+                        onChange={(e) => setMonthToPredict(e.target.value)}
+                    >
+                        <option value="">--Select--</option>
+                        {MONTH_OPTIONS.map((month) => (
+                            <option key={month} value={month}>
+                                {month}
+                            </option>
+                        ))}
+                    </select>
+
+                    <button 
+                        onClick={handlePredict} 
+                        disabled={loading || !monthToPredict}
+                        style={{ marginLeft: 10 }}
+                    >
+                        {loading ? "Predicting..." : "Run Prediction"}
+                    </button>
+                </div>
+
+                {note && (
+                    <div style={{ color: predictionResults?.error ? "red" : "black", marginBottom: 15 }}>
+                        <strong>{note}</strong>
+                    </div>
+                )}
+
+                {predictionResults && (
+                    <div style={{ marginTop: 20 }}>
+                        <h3>Prediction Results</h3>
+                        <p>
+                            <strong>Mean Squared Error (MSE):</strong> {typeof predictionResults.mse === "number" ? predictionResults.mse.toFixed(4) : predictionResults.mse || 'N/A'}
+                        </p>
+                        <p>
+                            <strong>Variance:</strong> {typeof predictionResults.variance === "number" ? predictionResults.variance.toFixed(4) : predictionResults.variance || 'N/A'}
+                        </p>
+                        <p>
+                            <strong>Explained Variance:</strong> {typeof predictionResults.explained_variance === "number" ? predictionResults.explained_variance.toFixed(4) : predictionResults.explained_variance || 'N/A'}
+                        </p>
+                        
+                        {imgUrl && (
+                            <div style={{ marginTop: 20 }}>
+                                <img src={imgUrl} alt="Actual vs Predicted Usage" style={{ maxWidth: "100%" }} />
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        );
+    };
+    
+    // Shipment vs. Usage Tab
+    const ShipmentVsUsage = () => {
+        const [selectedMonth, setSelectedMonth] = React.useState("");
+        const [monthOptions, setMonthOptions] = React.useState([]);
+        const [imgUrl, setImgUrl] = React.useState("");
+        const [note, setNote] = React.useState("");
+        const [loading, setLoading] = React.useState(false);
+
+        // Fetch unique months for the dropdown on component load
+        React.useEffect(() => {
+            fetch("/get_unique_months")
+                .then((r) => r.json())
+                .then((data) => {
+                    setMonthOptions(data.months || []);
+                })
+                .catch((e) => console.error("Error fetching months:", e));
+        }, []);
+
+        const handleGenerateChart = async () => {
+            if (!selectedMonth) {
+                setNote("Please select a month.");
+                return;
+            }
+
+            setLoading(true);
+            setImgUrl("");
+            setNote("");
+
+            try {
+                const response = await fetch("/shipment_vs_usage_plot", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ month: selectedMonth }),
+                });
+
+                if (!response.ok) {
+                    const txt = await response.text();
+                    setNote("Chart Error: " + txt);
+                    return;
+                }
+
+                const data = await response.json();
+
+                if (data.error) {
+                    setNote("Error: " + data.error);
+                    return;
+                }
+                
+                if (data.image) {
+                    setImgUrl("data:image/png;base64," + data.image);
+                    setNote(data.note || "Chart generated successfully.");
+                }
+
+            } catch (e) {
+                console.error("Plotting error:", e);
+                setNote("An unexpected error occurred during plotting.");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        return (
+            <div>
+                <h2>Shipment vs. Usage Analysis</h2>
+
+                <div style={{ marginBottom: 15 }}>
+                    <label>Month: </label>
+                    <select 
+                        value={selectedMonth} 
+                        onChange={(e) => setSelectedMonth(e.target.value)}
+                    >
+                        <option value="">--Select Month--</option>
+                        {monthOptions.map((month) => (
+                            <option key={month} value={month}>
+                                {month}
+                            </option>
+                        ))}
+                    </select>
+
+                    <button 
+                        onClick={handleGenerateChart} 
+                        disabled={loading || !selectedMonth}
+                        style={{ marginLeft: 10 }}
+                    >
+                        {loading ? "Generating..." : "Generate Chart"}
+                    </button>
+                </div>
+
+                {note && (
+                    <div style={{ color: "darkblue", marginBottom: 15 }}>
+                        <strong>{note}</strong>
+                    </div>
+                )}
+
+                {imgUrl && (
+                    <div style={{ marginTop: 20 }}>
+                        <img src={imgUrl} alt="Shipment vs Usage Plot" style={{ maxWidth: "100%" }} />
+                    </div>
+                )}
+            </div>
+        );
+    };
 
     // Application
     const App = () => {
@@ -391,6 +615,8 @@ HTML_TEMPLATE = """
             <div>
               <button onClick={() => setActiveTab("File Upload")}>File Upload</button>
               <button onClick={() => setActiveTab("Graphing")}>Graphing</button>
+              <button onClick={() => setActiveTab("NextMonthUsage")}>Next Month Usage</button>
+              <button onClick={() => setActiveTab("ShipmentVsUsage")}>Shipment vs. Usage</button>
             </div>
             <div>
               {/* could show modelBuilt indicator */}
@@ -405,6 +631,12 @@ HTML_TEMPLATE = """
             )}
             {activeTab === "Graphing" && (
               <Graphing columnNames={columnNames} modelBuilt={modelBuilt} modelTargets={modelTargets} />
+            )}
+            {activeTab === "NextMonthUsage" && (
+              <NextMonthUsage columnNames={columnNames} modelBuilt={modelBuilt} modelTargets={modelTargets} />
+            )}
+            {activeTab === "ShipmentVsUsage" && (
+                <ShipmentVsUsage columnNames={columnNames} modelBuilt={modelBuilt} modelTargets={modelTargets} />
             )}
           </div>
         </div>
@@ -430,12 +662,17 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
-    global group, category, item
+    global group, category, item, ship
 
     try:
         import re
+        import pandas as pd
+        import os
+        from flask import jsonify
+        import numpy as np
 
-        # loading excel files
+        # --- Initial Data Loading ---
+
         months = [
             "data/May_Data_Matrix (1).xlsx",
             "data/June_Data_Matrix.xlsx",
@@ -456,7 +693,7 @@ def upload_file():
                 )
                 dfs.append(df)
 
-        # splitting into categories
+        # Split by type
         group_dfs, category_dfs, item_dfs = [], [], []
         for df in dfs:
             cols = df.columns
@@ -475,23 +712,21 @@ def upload_file():
         category["type"] = "Category"
         item["type"] = "Specific Item"
 
-        # numeric conversions and cost calculation
+        # Numeric conversions
         for df in [group, category, item]:
             for col in ["Amount", "Count"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(
-                        df[col]
-                        .astype(str)
-                        .str.replace(r"[^0-9.\-]", "", regex=True),
+                        df[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True),
                         errors="coerce",
                     )
             df["cost"] = (df.get("Amount", 0) / df.get("Count", 1)).fillna(0)
 
-        # loading ingredient and shipment data
+        # Load external data
         ing = pd.read_csv("data/MSY Data - Ingredient.csv")
         ship = pd.read_csv("data/MSY Data - Shipment.csv")
 
-        # merging items and ingredients
+        # --- Merge item and ingredient datasets ---
         item["Item Name"] = item["Item Name"].astype(str)
         ing["Item name"] = ing["Item name"].astype(str)
 
@@ -509,60 +744,67 @@ def upload_file():
         )
         item_ing.columns = item_ing.columns.str.strip()
 
-        # helper function to normalize text
-        def normalize_text(s):
-            if isinstance(s, str):
-                s = s.strip().lower()
-                s = re.sub(r"[^a-z]+$", "", s)
-                return s
-            return s
+        # --- Fix ship total calculation ---
+        ship["total"] = (
+            ship["Quantity per shipment"].astype(int)
+            * ship["Number of shipments"].astype(int)
+        )
 
-        normalized_columns = [normalize_text(col) for col in item_ing.columns]
+        # Iterate properly
+        #for row in ship.itertuples():
+        #    freq = str(row.frequency).strip().lower()
+        #    if freq == "weekly":
+        #        ship.at[row.Index, "total"] *= 4  # Approximate 4 weeks in a month
+        #    elif freq == "biweekly":
+        #        ship.at[row.Index, "total"] *= 2  # Approximate 2 biweeks in a month
 
-        # merging shipment data
-        ship_copy = ship.copy()
-        ship_copy["Ingredient"] = ship_copy["Ingredient"].astype(str)
+        # --- Drop NaNs from categorical columns ---
+        def drop_categorical_nans(df):
+            non_numeric_cols = df.select_dtypes(
+                include=["object", "category", "bool", "datetime"]
+            ).columns
+            df_cleaned = df.dropna(subset=non_numeric_cols)
+            print(f"Dropped {len(df) - len(df_cleaned)} rows due to categorical NaNs.")
+            return df_cleaned
 
-        def expand_ingredient(ing_name):
-            parts = re.split(r"\s*\+\s*", ing_name)
-            return [normalize_text(p) for p in parts if p]
+        group = drop_categorical_nans(group)
+        category = drop_categorical_nans(category)
+        item_ing = drop_categorical_nans(item_ing)
 
-        merged = item_ing.copy()
+        # --- Fill NaNs ---
+        group.fillna(0, inplace=True)
+        category.fillna(0, inplace=True)
+        item_ing.fillna(0, inplace=True)
 
-        for _, row in ship_copy.iterrows():
-            ingredients = expand_ingredient(row["Ingredient"])
-            matched = False
+        # --- Map month numbers ---
+        month_map = {
+            "May": 5,
+            "June": 6,
+            "July": 7,
+            "August": 8,
+            "September": 9,
+            "October": 10,
+        }
 
-            for ingredient in ingredients:
-                matching_cols = [
-                    col for col in normalized_columns if ingredient in col and ingredient != ""
-                ]
-                if matching_cols:
-                    ship_rows = ship_copy[
-                        ship_copy["Ingredient"].str.lower().str.contains(ingredient, na=False)
-                    ]
-                    merged = pd.concat([merged, ship_rows], axis=0, ignore_index=True)
-                    matched = True
+        for df in [group, category, item_ing]:
+            df["month numerical"] = df["month"].map(month_map).fillna(0).astype(int)
 
-            if not matched:
-                print(f"No matching column found for ingredient(s): {ingredients}")
-
-        merged.reset_index(drop=True, inplace=True)
-        item_ing = merged
-
-        # filling nas
-        group.fillna({"cost": 0}, inplace=True)
-        category.fillna({"cost": 0}, inplace=True)
-        item_ing.fillna({"cost": 0}, inplace=True)
-        
+        # Assign final item data
         item = item_ing.copy()
 
+        # --- Save processed files ---
+        group.to_csv("data/processed/group.csv", index=False)
+        category.to_csv("data/processed/category.csv", index=False)
+        item.to_csv("data/processed/item.csv", index=False)
+        ship.to_csv("data/processed/ship.csv", index=False)
 
-        # return success
-        return jsonify({
-            "columns": list(item.columns),
-            "note": "Default data loaded and merged successfully."
-        })
+        # Return success
+        return jsonify(
+            {
+                "columns": list(item.columns),
+                "note": "Default data loaded and merged successfully.",
+            }
+        )
 
     except Exception as e:
         return jsonify({"error": f"Failed to load default data: {str(e)}"}), 500
@@ -572,14 +814,15 @@ def upload_file():
  
 @app.route("/get_dataframe_columns", methods=["POST"])
 def get_dataframe_columns():
-    global group, category, item
+    global group, category, item, ing_ship
     req = request.json or {}
     groupBy = req.get("groupBy")
 
     df_map = {
         "Group": group,
         "Category": category,
-        "Item": item
+        "Item": item,
+        "Ingredient/Shipment": ing_ship
     }
 
     df = df_map.get(groupBy)
@@ -593,7 +836,7 @@ def get_dataframe_columns():
 
 @app.route("/plot", methods=["POST"])
 def plot():
-    global group, category, item
+    global group, category, item, ing_ship
     req = request.json or {}
     x = req.get("x")
     y = req.get("y")
@@ -603,7 +846,8 @@ def plot():
     df_map = {
         "Group": group,
         "Category": category,
-        "Item": item
+        "Item": item,
+        "Ingredient/Shipment": ing_ship
     }
 
     df_temp = df_map.get(groupBy)
@@ -658,6 +902,501 @@ def plot():
         plt.close('all')
         return str(e), 500
 
+
+
+
+@app.route("/predict_next_month_usage", methods=["POST"])
+def predict_next_month_usage():
+    global item # Use the global item DataFrame
+
+    # Assuming normalize_text is available globally or imported
+    def normalize_text(s):
+        if isinstance(s, str):
+            s = s.strip().lower()
+            s = re.sub(r"[^a-z]+$", "", s)
+            s = re.sub(r"[^a-z]+", "", s) 
+            return s
+        return s
+    
+    if item is None or item.empty:
+        return jsonify({"error": "Item data not loaded. Please upload data first."}), 400
+
+    req = request.json or {}
+    month_to_predict_str = req.get("month")
+
+    if not month_to_predict_str:
+        return jsonify({"error": "Month to predict is required."}), 400
+
+    # Map month names to numerical order for filtering
+    month_map = {
+        "may": 5, "june": 6, "july": 7, "aug": 8, "sept": 9, "oct": 10, "nov": 11
+    }
+    month_num = month_map.get(month_to_predict_str.lower())
+    
+    # Map selected month string to actual month name in the dataset (for test_df lookup)
+    # Corrected months for dataset lookup based on user input (Aug -> August, Sept -> September, etc.)
+    month_actual_name_map = {
+        "june": "June", "july": "July", "aug": "August", "sept": "September", "oct": "October", "nov": "November"
+    }
+    month_for_test = month_actual_name_map.get(month_to_predict_str.lower())
+
+
+    if month_num is None:
+        return jsonify({"error": f"Invalid month selected: {month_to_predict_str}"}), 400
+
+    # Define target ingredients (these are the normalized column names)
+    targets = [
+        "braisedbeefusedg", "braisedchickeng", "braisedporkg", "eggcount", 
+        "riceg", "ramencount", "ricenoodlesg", "chickenthighpcs", 
+        "chickenwingspcs", "flourg", "picklecabbage", "greenonion", 
+        "cilantro", "whiteonion", "peasg", "carrotg", "bokchoyg", "tapiocastarch"
+    ]
+    
+    # 1. TEMPORARILY NORMALIZE COLUMN NAMES
+    
+    # Create a mapping of old column names to new normalized column names
+    col_name_map = {col: normalize_text(col) for col in item.columns}
+    
+    # Apply temporary rename to a DEEP COPY of the item DataFrame. 
+    df_pred_base = item.copy()
+    df_pred_base.columns = df_pred_base.columns.map(col_name_map)
+    
+    # Ensure 'month' column is handled consistently
+    if 'month' not in df_pred_base.columns:
+         return jsonify({"error": "Could not find 'month' column after normalization."}), 400
+         
+    df_pred_base['month_num'] = df_pred_base['month'].astype(str).str.lower().map(month_map)
+    
+    # 2. Filter the training data: Use all months BEFORE the selected month (using month_num)
+    train_df = df_pred_base[df_pred_base['month_num'] < month_num].copy()
+    
+    # 3. Filter the test data: Use the data ONLY from the month to predict (using month_actual_name_map)
+    # The filter uses the original, non-normalized 'month' column content (e.g., 'August')
+    if month_for_test:
+        test_df = df_pred_base[df_pred_base['month'].astype(str) == month_for_test].copy()
+    else:
+        # For November (month_for_test is None), initialize an empty DataFrame
+        test_df = df_pred_base.head(0).copy() 
+
+
+    if train_df.empty:
+        return jsonify({"error": f"No historical data available before {month_to_predict_str} to build the model."}), 400
+
+    # Ensure all target columns are numeric and fill NaNs with 0 for model input
+    for col in targets:
+        if col not in train_df.columns:
+             return jsonify({"error": f"Required ingredient column '{col}' not found in the item dataset."}), 400
+        
+        train_df[col] = pd.to_numeric(train_df[col], errors='coerce').fillna(0)
+        if not test_df.empty:
+            test_df[col] = pd.to_numeric(test_df[col], errors='coerce').fillna(0)
+
+
+    # Select all *other* numeric columns as predictors (excluding month_num and the targets)
+    exclude_cols = set(targets + ['month_num'])
+    predictors = [
+        col for col in train_df.select_dtypes(include='number').columns 
+        if col not in exclude_cols
+    ]
+
+    if not predictors:
+        return jsonify({"error": "No other numeric columns available to use as predictors."}), 400
+
+    
+    # --- Stepwise Regression and Prediction ---
+    
+    predictions = {}
+    actuals = {}
+    total_mse = 0
+    total_actual_var = 0
+    valid_targets_count = 0
+    
+    # X_train setup (Predictors)
+    X_train = train_df[predictors].fillna(train_df[predictors].mean())
+    train_means = X_train.mean().to_dict()
+
+    for target in targets:
+        y_train = train_df[target]
+        
+        # Stepwise Selection (Both directions, using AIC)
+        selected_features = []
+        remaining = list(X_train.columns)
+        best_score = float("inf")
+        
+        while True:
+            # --- 1. FORWARD STEP (Adding a predictor) ---
+            scores_to_add = []
+            
+            # Filter remaining candidates for stability
+            valid_candidates_to_add = [
+                c for c in remaining if X_train[c].nunique() > 1
+            ]
+            
+            for candidate in valid_candidates_to_add:
+                try:
+                    features = selected_features + [candidate]
+                    model_try = sm.OLS(y_train, sm.add_constant(X_train[features], has_constant="add")).fit()
+                    score = model_try.aic 
+                    scores_to_add.append((score, candidate))
+                except (np.linalg.LinAlgError, Exception):
+                    continue
+
+            # --- 2. BACKWARD STEP (Removing a predictor) ---
+            scores_to_remove = []
+            
+            if selected_features:
+                for candidate in selected_features:
+                    try:
+                        features = [f for f in selected_features if f != candidate]
+                        # Must check if constant can be added if features list becomes empty
+                        if not features:
+                            # Model with only constant
+                            model_try = sm.OLS(y_train, sm.add_constant(pd.DataFrame(index=X_train.index), has_constant="add")).fit()
+                        else:
+                            model_try = sm.OLS(y_train, sm.add_constant(X_train[features], has_constant="add")).fit()
+                            
+                        score = model_try.aic 
+                        scores_to_remove.append((score, candidate))
+                    except (np.linalg.LinAlgError, Exception):
+                        continue
+
+            # --- 3. DECISION STEP ---
+            
+            # Find the best move (lowest score from adding or removing)
+            best_forward = min(scores_to_add) if scores_to_add else (float("inf"), None)
+            best_backward = min(scores_to_remove) if scores_to_remove else (float("inf"), None)
+
+            current_best_score = min(best_forward[0], best_backward[0])
+            
+            if current_best_score < best_score:
+                # A move improved the model score
+                if current_best_score == best_forward[0]:
+                    # Best move is to add a feature (Forward)
+                    best_candidate = best_forward[1]
+                    selected_features.append(best_candidate)
+                    if best_candidate in remaining:
+                        remaining.remove(best_candidate)
+                    # print(f"Added {best_candidate}. New AIC: {current_best_score:.4f}") # Debugging
+                else:
+                    # Best move is to remove a feature (Backward)
+                    best_candidate = best_backward[1]
+                    selected_features.remove(best_candidate)
+                    remaining.append(best_candidate) # Move the removed feature back to 'remaining'
+                    # print(f"Removed {best_candidate}. New AIC: {current_best_score:.4f}") # Debugging
+                    
+                best_score = current_best_score
+            else:
+                # No move improved the model score, stop iteration
+                break
+            
+            
+        # --- Model Prediction ---
+        
+        # If test_df is empty (November), create dummy X_test with training means to get a prediction
+        if test_df.empty:
+            # Create a single dummy row for prediction, filled with training means
+            X_test_dummy = pd.DataFrame([train_means], index=[month_to_predict_str])
+            X_test_base = X_test_dummy[selected_features].copy()
+            y_train_min, y_train_max = y_train.min(), y_train.max()
+        else:
+            X_test_base = test_df[selected_features].copy()
+            y_train_min, y_train_max = y_train.min(), y_train.max()
+
+        # Handle prediction based on selected features
+        if not selected_features:
+            predictions[target] = pd.Series(y_train.mean(), index=X_test_base.index if not X_test_base.empty else [month_to_predict_str])
+            final_model = None
+        else:
+            try:
+                # Final model fitting (using the training data)
+                final_model = sm.OLS(y_train, sm.add_constant(X_train[selected_features], has_constant="add")).fit()
+                
+                # Fill missing test data with training means
+                for col_name, mean_val in train_means.items():
+                    if col_name in X_test_base.columns:
+                        X_test_base[col_name] = X_test_base[col_name].fillna(mean_val)
+                
+                # Prepare X_test for prediction
+                X_test = sm.add_constant(X_test_base, has_constant="add")
+                X_test = X_test.reindex(columns=final_model.model.exog_names, fill_value=0.0).astype(float)
+                
+                preds = final_model.predict(X_test)
+                
+                # Clip predictions to training range
+                preds = preds.clip(lower=y_train_min, upper=y_train_max)
+                predictions[target] = preds
+
+            except Exception as e:
+                # Prediction failed: use the mean
+                predictions[target] = pd.Series(y_train.mean(), index=X_test_base.index if not X_test_base.empty else [month_to_predict_str])
+                print(f"Prediction failed for {target}: {e}")
+                final_model = None
+
+        
+        # Aggregate metrics for valid test month data
+        if not test_df.empty:
+            actual = test_df[target]
+            predicted = predictions[target]
+            
+            # Align actual and predicted series by index and drop NaNs
+            actual_aligned, predicted_aligned = actual.align(predicted, join='inner', fill_value=np.nan)
+            valid_idx = actual_aligned.dropna().index.intersection(predicted_aligned.dropna().index)
+            
+            actual_aligned = actual_aligned.loc[valid_idx]
+            predicted_aligned = predicted_aligned.loc[valid_idx]
+            
+            if not actual_aligned.empty:
+                total_mse += mean_squared_error(actual_aligned, predicted_aligned)
+                total_actual_var += np.var(actual_aligned)
+                valid_targets_count += 1
+                
+                actuals[target] = actual_aligned.sum()
+                predictions[target] = predicted_aligned.sum()
+            else:
+                actuals[target] = 0
+                predictions[target] = predicted.sum() # Predicted sum of the non-empty series
+        else:
+            # For prediction-only months (e.g., November)
+            actuals[target] = np.nan 
+            predictions[target] = predictions[target].sum()
+
+    # --- Final Metric Calculation ---
+    
+    # November or any prediction-only month will have test_df.empty == True
+    if month_to_predict_str.lower() == 'nov' or test_df.empty:
+        avg_mse, avg_var, explained_var = "N/A", "N/A", "N/A"
+        note = f"Prediction successful for {month_to_predict_str}."
+    elif valid_targets_count > 0:
+        # Calculate overall metrics
+        avg_mse = total_mse / valid_targets_count
+        avg_var = total_actual_var / valid_targets_count
+        explained_var = 1 - (avg_mse / avg_var) if avg_var and avg_var != 0 else 0
+        note = f"Stepwise prediction for {month_to_predict_str} completed successfully."
+    else:
+        avg_mse, avg_var, explained_var = np.nan, np.nan, np.nan
+        note = f"Prediction failed to produce valid metrics for any target."
+
+
+    # --- Plotting ---
+    
+    # Prepare data for plotting (Actual vs. Predicted Sums for ALL ingredients)
+    plot_data = pd.DataFrame({
+        'Actual Usage': actuals,
+        'Predicted Usage': {k: v for k, v in predictions.items() if not isinstance(v, pd.Series)}
+    })
+    
+    # Replace NaN actuals with 0 for plotting consistency
+    plot_data['Actual Usage'] = plot_data['Actual Usage'].fillna(0)
+    
+    # Ensure import is inside function if it wasn't global
+    import matplotlib.pyplot as plt 
+    import io, base64 
+    
+    plt.figure(figsize=(12, 6))
+    plot_data.plot(kind='bar', ax=plt.gca(), width=0.8)
+    
+    plt.title(f"Actual vs. Predicted Ingredient Usage (Total for {month_to_predict_str})")
+    plt.ylabel("Total Usage (Sum)")
+    plt.xlabel("Ingredient")
+    plt.xticks(rotation=45, ha='right')
+    plt.legend(title='Usage Type')
+    plt.tight_layout()
+
+    # Encoding plot to base64
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    img_b64 = base64.b64encode(buf.read()).decode("utf-8")
+    buf.close()
+    plt.close("all")
+
+    # --- Return Results ---
+    
+    return jsonify({
+        "mse": avg_mse,
+        "variance": avg_var,
+        "explained_variance": explained_var,
+        "image": img_b64,
+        "note": note
+    })
+
+
+# Global pound-to-gram conversion factor
+LB_TO_GRAM = 453.592
+
+# --- Helper Functions ---
+
+def normalize_text(s):
+    """Normalizes text by removing non-alphanumeric chars and converting to lowercase."""
+    if isinstance(s, str):
+        s = s.strip().lower()
+        s = re.sub(r"[^a-z]+$", "", s)
+        s = re.sub(r"[^a-z]+", "", s) 
+        return s
+    return s
+
+# --- Endpoints ---
+
+@app.route("/get_unique_months")
+def get_unique_months():
+    global item # Assuming 'item' global variable is available
+
+    if item is None or item.empty:
+        return jsonify({"months": []})
+    
+    try:
+        # Use a copy and clean month column before finding unique values
+        df_temp = item.copy()
+        # Ensure 'month' is treated as a string
+        months = df_temp['month'].astype(str).str.strip().unique().tolist()
+        return jsonify({"months": sorted(months)})
+    except KeyError:
+        return jsonify({"months": []})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/shipment_vs_usage_plot", methods=["POST"])
+def shipment_vs_usage_plot():
+    global item, ship # Use global item and ship DataFrames
+
+    if item is None or item.empty or ship is None or ship.empty:
+        return jsonify({"error": "Item or Ship data not loaded."}), 400
+
+    req = request.json or {}
+    selected_month = req.get("month")
+
+    if not selected_month:
+        return jsonify({"error": "Month selection is required."}), 400
+
+    # The conversion map (normalized item ingredient : normalized ship ingredient)
+    INGREDIENT_CONVERSION_MAP = {
+        "braisedbeefusedg": "beef", 
+        "braisedchickeng": "chicken", 
+        "eggcount": "egg", 
+        "riceg": "rice", 
+        "ramencount": "ramen", 
+        "ricenoodlesg": "ricenoodles", 
+        "chickenthighpcs": "chicken", 
+        "chickenwingspcs": "chickenwings", 
+        "flourg": "flour", 
+        "greenonion": "greenonion", 
+        "cilantro": "cilantro", 
+        "whiteonion": "whiteonion", 
+        "peasg": "peascarrot", 
+        "bokchoyg": "bokchoy", 
+        "tapiocastarch": "tapiocastarch"
+    }
+
+    # Normalized list of target ingredient columns in the item dataset
+    ITEM_TARGETS_NORMALIZED = list(INGREDIENT_CONVERSION_MAP.keys())
+    
+    # Unit conversion flags (1 if conversion from g to lbs is needed, 0 otherwise)
+    UNIT_CONVERSION_REQUIRED = {
+        "braisedbeefusedg": 1, "braisedchickeng": 1, "riceg": 1, 
+        "ricenoodlesg": 1, "flourg": 1, "peasg": 1, "carrotg": 1, # Including carrotg per context
+        "bokchoyg": 1, 
+    }
+    
+    # --- 1. Process ITEM (Usage) Data ---
+
+    # Temporarily normalize item columns for access
+    item_temp = item.copy()
+    item_temp.columns = item_temp.columns.map(normalize_text)
+    
+    # Filter by month
+    month_filter = item_temp['month'].astype(str).str.strip() == selected_month.strip()
+    filtered_item_df = item_temp[month_filter]
+
+    if filtered_item_df.empty:
+        return jsonify({"error": f"No usage data found for the month: {selected_month}."}), 400
+
+    # Aggregate item ingredients (Usage sums)
+    usage_sums = {}
+    for item_col in ITEM_TARGETS_NORMALIZED:
+        if item_col in filtered_item_df.columns:
+            # Ensure column is numeric and sum it
+            value = pd.to_numeric(filtered_item_df[item_col], errors='coerce').fillna(0).sum()
+            
+            # Apply unit conversion (grams to pounds) if necessary
+            if UNIT_CONVERSION_REQUIRED.get(item_col, 0) == 1 and value != 0:
+                value /= LB_TO_GRAM
+                
+            usage_sums[item_col] = value
+        # Disregard item columns not present in the filtered dataframe
+
+    # --- 2. Process SHIPMENT Data ---
+
+    ship_temp = ship.copy()
+    # Normalize 'Ingredient' column for joining/mapping
+    ship_temp['normalized_ingredient'] = ship_temp['Ingredient'].astype(str).apply(normalize_text)
+
+    # Aggregate total shipment for each ingredient listed in the map
+    shipment_total = {}
+    
+    # Reverse the map to easily look up which item columns correspond to a ship ingredient
+    # { 'beef': ['braisedbeefusedg'], 'chicken': ['braisedchickeng', 'chickenthighpcs'], ... }
+    ship_to_item_map = {}
+    for k, v in INGREDIENT_CONVERSION_MAP.items():
+        ship_to_item_map.setdefault(v, []).append(k)
+
+    # Calculate the shipment total for all mapped ingredients
+    for ship_ing in ship_to_item_map.keys():
+        # Find matching rows in ship data
+        ship_rows = ship_temp[ship_temp['normalized_ingredient'] == ship_ing]
+        
+        if not ship_rows.empty:
+            total_shipment_amount = pd.to_numeric(ship_rows['total'], errors='coerce').fillna(0).sum()
+            
+            # The shipment amount must be distributed/stored under the corresponding item column name
+            for item_col in ship_to_item_map[ship_ing]:
+                shipment_total[item_col] = total_shipment_amount
+        else:
+            # If no shipment found, set to 0 for the item column
+            for item_col in ship_to_item_map[ship_ing]:
+                shipment_total[item_col] = 0
+
+    # --- 3. Final Data Assembly and Plotting ---
+
+    final_data = []
+    # Use the item columns as the key for the graph
+    for item_col in ITEM_TARGETS_NORMALIZED:
+        if item_col in usage_sums:
+            final_data.append({
+                'Ingredient': item_col,
+                'Used': usage_sums.get(item_col, 0),
+                'Shipped': shipment_total.get(item_col, 0)
+            })
+
+    if not final_data:
+        return jsonify({"error": "No data found after filtering and mapping ingredients."}), 400
+
+    plot_df = pd.DataFrame(final_data).set_index('Ingredient')
+    
+    # Plotting
+    plt.figure(figsize=(15, 8))
+    plot_df.plot(kind='bar', ax=plt.gca(), width=0.8)
+    
+    plt.title(f"Shipment vs. Usage per Ingredient for {selected_month}", fontsize=16)
+    plt.ylabel("Amount (in Pounds or Pieces/Counts)", fontsize=12)
+    plt.xlabel("Ingredient", fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+    plt.legend(title='Category')
+    plt.grid(axis='y', linestyle='--', alpha=0.6)
+    plt.tight_layout()
+
+    # Encoding plot to base64
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    img_b64 = base64.b64encode(buf.read()).decode("utf-8")
+    buf.close()
+    plt.close("all")
+
+    return jsonify({
+        "image": img_b64,
+        "note": f"Chart generated for {selected_month}."
+    })
 
 
 
