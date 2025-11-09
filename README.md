@@ -1,4 +1,4 @@
-# MSY-dashboard
+# Mai KitShan
 For TAMU Datathon
 
 Mai KitShan was built to reorganize Ma Shan Yun's inventory such that it is easier to interpret and analyze. It provides several features:
