@@ -1601,6 +1601,8 @@ def get_unique_months():
 
 
 
+# ... (omitting setup and sections 1-2 for brevity) ...
+
 @app.route("/shipment_vs_usage_plot", methods=["POST"])
 def shipment_vs_usage_plot():
     global item, ship 
@@ -1613,10 +1615,6 @@ def shipment_vs_usage_plot():
 
     if not selected_month:
         return jsonify({"error": "Month selection is required."}), 400
-
-    # Assuming normalize_text, INGREDIENT_CONVERSION_MAP, UNIT_CONVERSION_REQUIRED, and LB_TO_GRAM are defined
-
-    # ... (Omitted Data Setup and Processing Sections 1, 2, and 3 - they remain the same) ...
 
     # The conversion map (normalized item ingredient : normalized ship ingredient)
     INGREDIENT_CONVERSION_MAP = {
@@ -1701,8 +1699,6 @@ def shipment_vs_usage_plot():
     # --- 3. Final Data Assembly ---
 
     final_data = []
-    
-    # NEW LISTS FOR INVENTORY ACTIONS
     order_less_list = []
     order_more_list = []
 
@@ -1721,7 +1717,8 @@ def shipment_vs_usage_plot():
             
             # --- Inventory Action Logic (NEW) ---
             if shipped_val > 0:
-                if used_val < (0.5 * shipped_val):
+                # Assuming the original request meant less than 75% for Order Less
+                if used_val < (0.75 * shipped_val):
                     order_less_list.append(display_name)
                 elif used_val > shipped_val:
                     order_more_list.append(display_name)
@@ -1734,9 +1731,6 @@ def shipment_vs_usage_plot():
     
     # 4. PREPARE TABULAR DATA 
     table_df = plot_df.reset_index()
-    # Ensure 'Units' is converted from plot_df index back to a column for the table
-    # Since plot_df drops 'Units', we must add it back manually from final_data or just use final_data directly
-    # To keep table_df aligned with plotting, we'll re-merge the 'Units' data.
     unit_lookup = {d['Ingredient']: d['Units'] for d in final_data}
     table_df['Units'] = table_df['Ingredient'].map(unit_lookup)
     
@@ -1747,10 +1741,7 @@ def shipment_vs_usage_plot():
 
 
     # Prepare the Order Table data structure
-    # We need a list of dictionaries where keys are 'Order Less' and 'Order More'
-    # To make a clean 2-column table with uneven lists, we pad the shorter list with empty strings.
     max_len = max(len(order_less_list), len(order_more_list))
-    
     order_less_padded = order_less_list + [''] * (max_len - len(order_less_list))
     order_more_padded = order_more_list + [''] * (max_len - len(order_more_list))
     
@@ -1760,14 +1751,26 @@ def shipment_vs_usage_plot():
     ]
 
 
-    # Plotting (unchanged)
+    # 5. Plotting (With Sorting Applied)
     plt.figure(figsize=(15, 8))
-    plot_df.plot(kind='bar', ax=plt.gca(), width=0.8)
     
-    plt.title(f"Shipment vs. Usage per Ingredient for {selected_month}", fontsize=16)
+    # --- SORTING FIX ---
+    # 1. Sort the plotting DataFrame by 'Used' in descending order
+    plot_df_sorted = plot_df.sort_values(by='Used', ascending=False)
+    
+    # 2. Get the new order of index labels
+    order_list = plot_df_sorted.index.tolist()
+
+    # 3. Plot the sorted DataFrame
+    # Note: plot_df.plot() uses the index order automatically, 
+    # but we need to explicitly plot the sorted DataFrame.
+    plot_df_sorted.plot(kind='bar', ax=plt.gca(), width=0.8)
+    
+    plt.title(f"Shipment vs. Usage per Ingredient for {selected_month} (Sorted by Used)", fontsize=16)
     plt.ylabel("Amount (in Pounds or Pieces/Counts)", fontsize=12)
     plt.xlabel("Ingredient", fontsize=12)
-    plt.xticks(rotation=45, ha='right')
+    # The tick labels will automatically follow the sorted index
+    plt.xticks(rotation=45, ha='right') 
     plt.legend(title='Category')
     plt.grid(axis='y', linestyle='--', alpha=0.6)
     plt.tight_layout()
@@ -1777,15 +1780,14 @@ def shipment_vs_usage_plot():
     plt.savefig(buf, format="png")
     buf.seek(0)
     img_b64 = base64.b64encode(buf.read()).decode("utf-8")
-    buf.close()
     plt.close("all")
 
-    # 5. RETURN TABULAR DATA
+    # 6. RETURN TABULAR DATA
     return jsonify({
         "image": img_b64,
         "note": f"Chart generated for {selected_month}.",
-        "table_data": table_data,         # Existing table
-        "action_table_data": action_table_data # NEW table data
+        "table_data": table_data,
+        "action_table_data": action_table_data
     })
 
 
