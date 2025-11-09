@@ -20,7 +20,6 @@ from collections import Counter
 from collections import defaultdict
 
 
-
 app = Flask(__name__)
 CORS(app)
 
@@ -95,6 +94,28 @@ HTML_TEMPLATE = """
   <div id="root"></div>
   {% raw %}
   <script type="text/babel">
+    const { useState, useEffect } = React;
+    
+    function usePersistentState(key, defaultValue) {
+        const [state, setState] = useState(() => {
+            try {
+            const stored = localStorage.getItem(key);
+            return stored ? JSON.parse(stored) : defaultValue;
+            } catch {
+            return defaultValue;
+            }
+        });
+
+        useEffect(() => {
+            try {
+            localStorage.setItem(key, JSON.stringify(state));
+            } catch (e) {
+            console.error("Failed to save state:", e);
+            }
+        }, [key, state]);
+
+        return [state, setState];
+    }
  
     // File Upload Tab (now auto-loads default data)
     const FileUpload = ({ setColumnNames, setTargetVariable }) => {
@@ -404,11 +425,11 @@ HTML_TEMPLATE = """
 
     // Next Month Usage Tab
     const NextMonthUsage = () => {
-        const [monthToPredict, setMonthToPredict] = React.useState("");
-        const [predictionResults, setPredictionResults] = React.useState(null);
-        const [loading, setLoading] = React.useState(false);
-        const [imgUrl, setImgUrl] = React.useState("");
-        const [note, setNote] = React.useState("");
+        const [monthToPredict, setMonthToPredict] = usePersistentState("nextMonthUsage_monthToPredict", "");
+        const [predictionResults, setPredictionResults] = usePersistentState("nextMonthUsage_results", null);
+        const [loading, setLoading] = React.useState(false); // no need to persist this
+        const [imgUrl, setImgUrl] = usePersistentState("nextMonthUsage_imgUrl", "");
+        const [note, setNote] = usePersistentState("nextMonthUsage_note", "");
 
         const MONTH_OPTIONS = ["June", "July", "Aug", "Sept", "Oct", "Nov"];
 
@@ -520,11 +541,11 @@ HTML_TEMPLATE = """
 
     // Cost Prediction Tab
     const CostPrediction = () => {
-        const [predictionResults, setPredictionResults] = React.useState(null);
+        const [predictionResults, setPredictionResults] = usePersistentState("costPrediction_results", null);
+        const [imgUrl, setImgUrl] = usePersistentState("costPrediction_imgUrl", "");
+        const [note, setNote] = usePersistentState("costPrediction_note", "");
+        const [coefficientTable, setCoefficientTable] = usePersistentState("costPrediction_coefficientTable", []);
         const [loading, setLoading] = React.useState(false);
-        const [imgUrl, setImgUrl] = React.useState("");
-        const [note, setNote] = React.useState("");
-        const [coefficientTable, setCoefficientTable] = React.useState([]); // NEW: State for coefficient table
 
         const handleRunPrediction = async () => {
             setLoading(true);
@@ -649,13 +670,13 @@ HTML_TEMPLATE = """
     
     // Shipment vs. Usage Tab
     const ShipmentVsUsage = () => {
-        const [selectedMonth, setSelectedMonth] = React.useState("");
+        const [selectedMonth, setSelectedMonth] = usePersistentState("shipmentVsUsage_selectedMonth", "");
+        const [imgUrl, setImgUrl] = usePersistentState("shipmentVsUsage_imgUrl", "");
+        const [note, setNote] = usePersistentState("shipmentVsUsage_note", "");
+        const [tableData, setTableData] = usePersistentState("shipmentVsUsage_tableData", []);
+        const [actionTableData, setActionTableData] = usePersistentState("shipmentVsUsage_actionTableData", []);
         const [monthOptions, setMonthOptions] = React.useState([]);
-        const [imgUrl, setImgUrl] = React.useState("");
-        const [note, setNote] = React.useState("");
         const [loading, setLoading] = React.useState(false);
-        const [tableData, setTableData] = React.useState([]);
-        const [actionTableData, setActionTableData] = React.useState([]);
 
         // Fetch unique months for the dropdown on component load (unchanged)
         React.useEffect(() => {
@@ -810,12 +831,12 @@ HTML_TEMPLATE = """
     
     // Used/Shipped Timeline Tab
     const UsedShippedTimeline = () => {
-        const [selectedIngredient, setSelectedIngredient] = React.useState("");
+        const [selectedIngredient, setSelectedIngredient] = usePersistentState("usedShippedTimeline_selectedIngredient", "");
+        const [imgUrl, setImgUrl] = usePersistentState("usedShippedTimeline_imgUrl", "");
+        const [note, setNote] = usePersistentState("usedShippedTimeline_note", "");
+        const [tableData, setTableData] = usePersistentState("usedShippedTimeline_tableData", []);
         const [ingredientOptions, setIngredientOptions] = React.useState([]);
-        const [imgUrl, setImgUrl] = React.useState("");
-        const [note, setNote] = React.useState("");
         const [loading, setLoading] = React.useState(false);
-        const [tableData, setTableData] = React.useState([]);
 
         // Fetch ingredients on mount
         React.useEffect(() => {
@@ -932,13 +953,13 @@ HTML_TEMPLATE = """
     
     // Bestsellers Tab
     const Bestsellers = () => {
-        const [selectedMonth, setSelectedMonth] = React.useState("");
+        const [selectedMonth, setSelectedMonth] = usePersistentState("bestsellers_selectedMonth", "");
+        const [imgUrl, setImgUrl] = usePersistentState("bestsellers_imgUrl", "");
+        const [note, setNote] = usePersistentState("bestsellers_note", "");
+        const [ingredientTable, setIngredientTable] = usePersistentState("bestsellers_ingredientTable", []);
+        const [frequencyTable, setFrequencyTable] = usePersistentState("bestsellers_frequencyTable", []);
         const [monthOptions, setMonthOptions] = React.useState([]);
-        const [imgUrl, setImgUrl] = React.useState("");
-        const [note, setNote] = React.useState("");
         const [loading, setLoading] = React.useState(false);
-        const [ingredientTable, setIngredientTable] = React.useState([]); // State for the ingredient breakdown table
-        const [frequencyTable, setFrequencyTable] = React.useState([]); // <-- NEW STATE FOR FREQUENCY
 
         // --- Fetch unique months on load (unchanged) ---
         React.useEffect(() => {
@@ -2036,22 +2057,33 @@ def normalize_text(s):
 
 @app.route("/get_unique_months")
 def get_unique_months():
-    global item, LB_TO_GRAM
+    global item
 
     if item is None or item.empty:
         return jsonify({"months": []})
     
     try:
-        # Use a copy and clean month column before finding unique values
         df_temp = item.copy()
-        # Ensure 'month' is treated as a string
-        months = df_temp['month'].astype(str).str.strip().unique().tolist()
-        return jsonify({"months": sorted(months)})
-    except KeyError:
-        return jsonify({"months": []})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        
+        # 1. Ensure required columns exist
+        if 'month' not in df_temp.columns:
+            return jsonify({"error": "Item dataset missing 'month' column."}), 400
+        if 'month numerical' not in df_temp.columns:
+            return jsonify({"error": "Item dataset missing 'month numerical' column."}), 400
+        month_data = df_temp[['month', 'month numerical']].drop_duplicates().copy()
+        
+        month_data['month numerical'] = pd.to_numeric(month_data['month numerical'], errors='coerce')
+        month_data = month_data.dropna(subset=['month numerical'])
+        
+        # Sort chronologically
+        month_data = month_data.sort_values(by='month numerical', ascending=True)
+        
+        ordered_months = month_data['month'].astype(str).str.strip().tolist()
 
+        return jsonify({"months": ordered_months})
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to retrieve and sort months: {str(e)}"}), 500
 
 
 
