@@ -1,5 +1,5 @@
 # Mai KitShan
-For TAMU Datathon
+For TAMU Datathon - To run this properly need a folder named Data containing the datasets
 
 Mai KitShan was built to reorganize Ma Shan Yun's inventory such that it is easier to interpret and analyze. It provides several features:
 
